@@ -3610,7 +3610,7 @@ PRAGMA integrity_check;
 <p>Even if everything went great, you'll likely see a bad tag count here or there, which the section after this may fix. If it doesn't, hit me up.</p>
 <p>Check the contact page in the help (install_dir/help/contact.html in a built install) for ways to get me.</p>
 <h2 id="after_fixing_recovering_files">after fixing: recovering files<a class="headerlink" href="#after_fixing_recovering_files" title="Permanent link">&para;</a></h2>
-<p>When recovering a database, you may lose some data or have to resync an older thing with a newer thing. If you need to tell your database to check for files it thinks it has but are now missing--and, conversely, to check for files it has but did not know about--check out 'help my media files are broke.txt', also in the db dir, right beside this document.</p>
+<p>When recovering a database, you may lose some data or have to resync an older thing with a newer thing. If you need to tell your database to check for files it thinks it has but are now missing--and, conversely, to check for files it has but did not know about--check out 'Help my media files are broke', right beside this document.</p>
 <h2 id="after_fixing_recovering_mappings">after fixing: recovering mappings<a class="headerlink" href="#after_fixing_recovering_mappings" title="Permanent link">&para;</a></h2>
 <p>Since client.mappings.db is the file most often hit by disk problems, and since recovery operations often lose some original data, recovering lost tags is often the next job after cleanup. A clone will also compact your database, so just losing a few percent probably isn't a big deal. If your file is now half as big after a clone, you probably lost 40% of your tags. If it is 97% of the original size, you probably lost nothing.</p>
 <p>In client.caches.db, there is a cache of your tags for the files currently in the client. We can use this cache to repopulate your mappings tables with <em>database-&gt;check and repair-&gt;repopulate truncated mappings tables</em>. It won't always get everything, but if client.caches.db was undamaged, it should work for most of your files.</p>
@@ -3652,7 +3652,7 @@ PRAGMA integrity_check;
     <span class="md-icon" title="Last update">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 13.1c-.1 0-.3.1-.4.2l-1 1 2.1 2.1 1-1c.2-.2.2-.6 0-.8l-1.3-1.3c-.1-.1-.2-.2-.4-.2m-1.9 1.8-6.1 6V23h2.1l6.1-6.1zM12.5 7v5.2l4 2.4-1 1L11 13V7zM11 21.9c-5.1-.5-9-4.8-9-9.9C2 6.5 6.5 2 12 2c5.3 0 9.6 4.1 10 9.3-.3-.1-.6-.2-1-.2s-.7.1-1 .2C19.6 7.2 16.2 4 12 4c-4.4 0-8 3.6-8 8 0 4.1 3.1 7.5 7.1 7.9l-.1.2z"/></svg>
     </span>
-    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-date" title="April 14, 2026 23:27:28 UTC">April 14, 2026</span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-date" title="May 27, 2026 21:24:34 UTC">May 27, 2026</span>
   </span>
 
     
