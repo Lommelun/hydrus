@@ -45,6 +45,7 @@ from hydrus.client.gui import ClientGUIDownloaders
 from hydrus.client.gui import ClientGUIDragDrop
 from hydrus.client.gui import ClientGUIFrames
 from hydrus.client.gui import ClientGUIFunctions
+from hydrus.client.gui import ClientGUIGraphExplorer
 from hydrus.client.gui import ClientGUIMenus
 from hydrus.client.gui import ClientGUIPopupMessages
 from hydrus.client.gui import ClientGUIShortcuts
@@ -4072,6 +4073,10 @@ ATTACH "client.mappings.db" as external_mappings;'''
         
         ClientGUIMenus.AppendMenuItem( menu, 'manage where tag siblings and parents apply' + HC.UNICODE_ELLIPSIS, 'Set which services\' siblings and parents apply where.', self._ManageTagDisplayApplication )
         
+        ClientGUIMenus.AppendSeparator( menu )
+        
+        ClientGUIMenus.AppendMenuItem( menu, 'explore tag graph' + HC.UNICODE_ELLIPSIS, 'Browse tag siblings, parents, and co-occurrence (experimental, opt-in).', self._ExploreTagGraph )
+        
         #
         
         tag_display_maintenance_menu = ClientGUIMenus.GenerateMenu( menu )
@@ -5215,6 +5220,15 @@ ATTACH "client.mappings.db" as external_mappings;'''
             
             dlg.exec()
             
+        
+    
+    def _ExploreTagGraph( self ):
+        
+        frame = ClientGUITopLevelWindowsPanels.FrameThatTakesScrollablePanel( self, 'tag graph explorer', frame_key = 'tag_graph_explorer' )
+        
+        panel = ClientGUIGraphExplorer.TagGraphExplorerPanel( frame )
+        
+        frame.SetPanel( panel )
         
     
     def _ManageURLClasses( self ):

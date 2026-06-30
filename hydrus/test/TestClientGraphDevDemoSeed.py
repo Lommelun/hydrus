@@ -113,12 +113,21 @@ class TestDevDemoSeed( unittest.TestCase ):
             
             db.Write( 'content_updates', True, ClientContentUpdates.ContentUpdatePackage.STATICCreateFromContentUpdates( PTR_TAG_SERVICE_KEY, sibling_updates + parent_updates ) )
             
+            # also apply directly to the default local ("my tags") service -- realistic (personal
+            # tags often have some siblings/parents set directly too), and it's what the v1 graph
+            # explorer browses by default, since it doesn't have a service picker yet
+            db.Write( 'content_updates', True, ClientContentUpdates.ContentUpdatePackage.STATICCreateFromContentUpdates( CC.DEFAULT_LOCAL_TAG_SERVICE_KEY, sibling_updates + parent_updates ) )
+            
             while db.Write( 'sync_tag_display_maintenance', True, PTR_TAG_SERVICE_KEY, 1 ):
                 
                 pass
             
+            while db.Write( 'sync_tag_display_maintenance', True, CC.DEFAULT_LOCAL_TAG_SERVICE_KEY, 1 ):
+                
+                pass
             
-            print( f'seeded {SEED_DB_DIR}: client api on port {API_PORT}, {len(relations["siblings"])} siblings + {len(relations["parents"])} parents on PTR (sample)' )
+            
+            print( f'seeded {SEED_DB_DIR}: client api on port {API_PORT}, {len(relations["siblings"])} siblings + {len(relations["parents"])} parents on PTR (sample) and on my tags' )
         
         finally:
             
