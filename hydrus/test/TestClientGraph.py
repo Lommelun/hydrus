@@ -53,9 +53,46 @@ class TestClientGraphMigration( ClientGraphTestFixtures.GraphFixtureMixin, unitt
             self.assertEqual( graph_db.GetAncestors( 'dog', self.ptr_key ), dog_ancestors )
             
             graph_db.Close()
-        
+
         finally:
-            
+
+            shutil.rmtree( graph_parent_dir, ignore_errors = True )
+
+
+    def test_importer_matches_sqlite_ancestors_under_cross_service_application_order( self ):
+
+        # the discriminating case: personal's own chain (cat->feline->animal) is fine to mirror
+        # per-service, but 'dog' has no parent rule on personal at all -- only PTR does
+        # (dog->canine->animal). Once personal's applicable-parent-services order includes PTR,
+        # SQLite unions that rule into personal's own display; the importer has to match it, not
+        # just personal's own raw tag_parents pairs.
+
+        self._BuildFixture()
+
+        order = { self.personal_key : [ self.personal_key, self.ptr_key, self.source_key ] }
+        self._write( 'tag_display_application', order, order )
+        self._SyncDisplay( ( self.personal_key, ) )
+
+        graph_parent_dir = tempfile.mkdtemp( prefix = 'hydrus_graph_migrate_cross_' )
+        graph_dir = os.path.join( graph_parent_dir, 'graph' )
+
+        try:
+
+            graph_db = ClientGraphDB.GraphDB( graph_dir )
+
+            ClientGraphMigrate.ImportFromHydrusDB( graph_db, type( self )._db )
+
+            result = self._read( 'tag_siblings_and_parents_lookup', ClientTags.TAG_DISPLAY_DISPLAY_ACTUAL, ( 'dog', ) )
+
+            ( _, _, _, expected_ancestors ) = result[ 'dog' ][ self.personal_key ]
+
+            self.assertEqual( expected_ancestors, { 'canine', 'animal' } )  # sanity: cross-service application is actually in effect
+            self.assertEqual( graph_db.GetAncestors( 'dog', self.personal_key ), expected_ancestors )
+
+            graph_db.Close()
+
+        finally:
+
             shutil.rmtree( graph_parent_dir, ignore_errors = True )
 
 
