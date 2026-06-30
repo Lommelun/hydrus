@@ -68,6 +68,7 @@ from hydrus.test import TestClientGraphDevDemoSeed
 from hydrus.test import TestClientGraphGrounding
 from hydrus.test import TestClientGraphProjections
 from hydrus.test import TestClientGraphSeed
+from hydrus.test import TestClientGraphVisualize
 from hydrus.test import TestClientImageHandling
 from hydrus.test import TestClientImportObjects
 from hydrus.test import TestClientImportOptions
@@ -1011,7 +1012,8 @@ class Controller( object ):
         module_lookup[ 'client_graph' ] = [
             TestClientGraphGrounding,
             TestClientGraph,
-            TestClientGraphProjections
+            TestClientGraphProjections,
+            TestClientGraphVisualize
         ]
         
         module_lookup[ 'client_graph_seed' ] = [

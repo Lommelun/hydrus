@@ -1,8 +1,11 @@
+import tempfile
+
 from qtpy import QtCore as QC
 from qtpy import QtWidgets as QW
 
 from hydrus.client import ClientConstants as CC
 from hydrus.client import ClientGlobals as CG
+from hydrus.client import ClientPaths
 from hydrus.client.gui import ClientGUIDialogsMessage
 from hydrus.client.gui import QtPorting as QP
 from hydrus.client.gui.panels import ClientGUIScrolledPanels
@@ -12,12 +15,14 @@ from hydrus.client.gui.widgets import ClientGUICommon
 from hydrus.client.graph import ClientGraphMigrate
 from hydrus.client.graph import ClientGraphProjections
 from hydrus.client.graph import ClientGraphSuggestions
+from hydrus.client.graph import ClientGraphVisualize
 
 # Read-only browser over the tag graph: siblings/parents/co-occurrence for a seed tag,
 # double-click any result to recentre on it. Multi-hop browsing is just repeated single-hop
-# recentring with a back button -- no node-link canvas, no precedent for one in this codebase
-# and Hydrus has no built-in graph-drawing widget, so that would be substantial new machinery
-# for what a few list views already cover.
+# recentring with a back button. "open visual graph" renders a proper node-link diagram for the
+# current tag's neighbourhood (see ClientGraphVisualize) -- in the browser, not a Qt canvas, since
+# Hydrus has no QtWebEngine/graph-drawing widget and re-implementing D3-grade force layout, drag,
+# and zoom in raw Qt painting isn't worth it next to "open an HTML file".
 #
 # ponytail: no service selector. Edges are service-scoped, so a real explorer eventually wants
 # one, but CC.DEFAULT_LOCAL_TAG_SERVICE_KEY always exists and v1 doesn't need to pick between
@@ -31,6 +36,7 @@ class TagGraphExplorerPanel( ClientGUIScrolledPanels.ReviewPanel ):
         
         self._service_key = CC.DEFAULT_LOCAL_TAG_SERVICE_KEY
         self._history = []
+        self._current_tag = None
         
         self._seed_input = ClientGUIACDropdown.AutoCompleteDropdownTagsWrite( self, self._OnSeedChosen, CG.client_controller.new_options.GetDefaultLocalLocationContext(), self._service_key, show_paste_button = False )
         
@@ -41,6 +47,10 @@ class TagGraphExplorerPanel( ClientGUIScrolledPanels.ReviewPanel ):
         self._rebuild_button = QW.QPushButton( 'rebuild tag graph', self )
         self._rebuild_button.setToolTip( 'Re-import siblings/parents and recompute tag co-occurrence for this service from the current data.' )
         self._rebuild_button.clicked.connect( self._OnRebuild )
+        
+        self._visualize_button = QW.QPushButton( 'open visual graph', self )
+        self._visualize_button.setToolTip( 'Open a node-link diagram of the current tag\'s local neighbourhood (siblings, parents, co-occurrence) in your browser.' )
+        self._visualize_button.clicked.connect( self._OnVisualize )
         
         self._current_tag_label = ClientGUICommon.BetterStaticText( self, 'pick a tag above to start exploring' )
         
@@ -53,12 +63,13 @@ class TagGraphExplorerPanel( ClientGUIScrolledPanels.ReviewPanel ):
         self._related_list = QW.QListWidget( self )
         self._related_list.itemDoubleClicked.connect( self._OnListItemActivated )
         
-        self._interactive_widgets = [ self._seed_input, self._back_button, self._rebuild_button, self._siblings_list, self._ancestors_list, self._related_list ]
+        self._interactive_widgets = [ self._seed_input, self._back_button, self._rebuild_button, self._visualize_button, self._siblings_list, self._ancestors_list, self._related_list ]
         
         top_hbox = QP.HBoxLayout()
         
         QP.AddToLayout( top_hbox, self._back_button, CC.FLAGS_CENTER_PERPENDICULAR )
         QP.AddToLayout( top_hbox, self._seed_input, CC.FLAGS_EXPAND_BOTH_WAYS )
+        QP.AddToLayout( top_hbox, self._visualize_button, CC.FLAGS_CENTER_PERPENDICULAR )
         QP.AddToLayout( top_hbox, self._rebuild_button, CC.FLAGS_CENTER_PERPENDICULAR )
         
         lists_hbox = QP.HBoxLayout()
@@ -143,18 +154,9 @@ class TagGraphExplorerPanel( ClientGUIScrolledPanels.ReviewPanel ):
         ideal = graph_db.GetIdeal( tag, self._service_key )
         ancestors = sorted( graph_db.GetAncestors( ideal, self._service_key ) )
         related = ClientGraphSuggestions.GetRelatedTags( graph_db, tag, self._service_key, limit = 25 )
+        siblings = graph_db.GetSiblings( ideal, self._service_key )
         
-        sibling_result = graph_db.Execute(
-            'MATCH (a:Tag)-[:SIBLING_OF {service_key: $service_key}]->(b:Tag {tag: $tag}) RETURN a.tag',
-            { 'tag' : ideal, 'service_key' : self._service_key.hex() }
-        )
-        
-        siblings = []
-        
-        while sibling_result.has_next():
-            
-            siblings.append( sibling_result.get_next()[ 0 ] )
-        
+        self._current_tag = tag
         
         label = tag if ideal == tag else f'{tag}  (displays as: {ideal})'
         
@@ -189,6 +191,64 @@ class TagGraphExplorerPanel( ClientGUIScrolledPanels.ReviewPanel ):
             
             list_widget.addItem( item )
     
+    
+    
+    def _OnVisualize( self ):
+        
+        if self._current_tag is None:
+            
+            return
+        
+        
+        graph_db = self._GetGraphDB()
+        
+        if graph_db is None:
+            
+            return
+        
+        
+        for widget in self._interactive_widgets:
+            
+            widget.setEnabled( False )
+        
+        
+        self._visualize_button.setText( 'generating…' )
+        
+        tag = self._current_tag
+        service_key = self._service_key
+        
+        def work_callable():
+            
+            neighborhood = ClientGraphVisualize.BuildNeighborhood( graph_db, tag, service_key )
+            html_text = ClientGraphVisualize.GenerateHTML( neighborhood )
+            
+            with tempfile.NamedTemporaryFile( mode = 'w', suffix = '.html', prefix = 'hydrus_tag_graph_', delete = False, encoding = 'utf8' ) as f:
+                
+                f.write( html_text )
+                
+                return f.name
+        
+        
+        def publish_callable( html_path ):
+            
+            for widget in self._interactive_widgets:
+                
+                widget.setEnabled( True )
+            
+            
+            self._visualize_button.setText( 'open visual graph' )
+            
+            ClientPaths.LaunchPathInWebBrowser( html_path )
+        
+        
+        def do_work():
+            
+            html_path = work_callable()
+            
+            CG.client_controller.CallAfterQtSafe( self, publish_callable, html_path )
+        
+        
+        CG.client_controller.CallToThread( do_work )
     
     
     def _OnRebuild( self ):
