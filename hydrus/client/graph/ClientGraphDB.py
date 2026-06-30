@@ -86,26 +86,32 @@ class GraphDB( object ):
         )
     
     
+    def GetExistingTags( self ) -> set:
+        
+        result = self._connection.execute( 'MATCH (t:Tag) RETURN t.tag' )
+        
+        tags = set()
+        
+        while result.has_next():
+            
+            tags.add( result.get_next()[ 0 ] )
+        
+        
+        return tags
+    
+    
+    def BulkLoad( self, table_name: str, csv_path: str ):
+        
+        # PARALLEL=FALSE: the default parallel CSV reader chokes on quoted newlines, which a tag
+        # could in principle contain; not worth the speed for the rare case it bites
+        self._connection.execute( f'COPY {table_name} FROM "{csv_path}" (HEADER=true, PARALLEL=FALSE)' )
+    
+    
     def ClearCoOccurs( self, service_key: bytes ):
         
         self._connection.execute(
             'MATCH (:Tag)-[r:CO_OCCURS {service_key: $service_key}]->(:Tag) DELETE r',
             { 'service_key' : service_key.hex() }
-        )
-    
-    
-    def MergeCoOccurs( self, tag_a: str, tag_b: str, service_key: bytes, count: int, weight: float ):
-        
-        # stored once per unordered pair under a canonical ordering; queried with an undirected
-        # pattern (see GetCoOccurring) so it doesn't matter which side a caller asks from
-        if tag_b < tag_a:
-            
-            ( tag_a, tag_b ) = ( tag_b, tag_a )
-        
-        
-        self._connection.execute(
-            'MATCH (a:Tag {tag: $tag_a}), (b:Tag {tag: $tag_b}) MERGE (a)-[r:CO_OCCURS {service_key: $service_key}]->(b) SET r.count = $count, r.weight = $weight',
-            { 'tag_a' : tag_a, 'tag_b' : tag_b, 'service_key' : service_key.hex(), 'count' : count, 'weight' : weight }
         )
     
     

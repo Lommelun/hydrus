@@ -1,8 +1,12 @@
+import csv
 import itertools
 import os
 import sqlite3
+import tempfile
 from collections import Counter
 from collections import defaultdict
+
+from hydrus.core import HydrusTags
 
 # Batch (re)builders for derived graph data -- the things that have to be recomputed wholesale
 # rather than kept live by ClientGraphSync. CO_OCCURS is the only one so far (Phase 2); per the
@@ -54,6 +58,9 @@ def RebuildCoOccurrence( graph_db, db_dir, service_key, min_count = 2 ):
             pair_counts[ ( a, b ) ] += 1
     
     
+    pruned_pairs = []
+    involved_tags = set()
+    
     for ( ( a, b ), count ) in pair_counts.items():
         
         if count < min_count:
@@ -66,9 +73,55 @@ def RebuildCoOccurrence( graph_db, db_dir, service_key, min_count = 2 ):
         expected = ( tag_freq[ a ] * tag_freq[ b ] ) / num_files
         weight = count / expected if expected > 0 else 0.0
         
-        graph_db.MergeTag( a )
-        graph_db.MergeTag( b )
-        graph_db.MergeCoOccurs( a, b, service_key, count, weight )
+        pruned_pairs.append( ( a, b, count, weight ) )
+        involved_tags.add( a )
+        involved_tags.add( b )
+    
+    
+    if len( pruned_pairs ) == 0:
+        
+        return
+    
+    
+    # bulk CSV load, not per-edge MERGE: a real corpus prunes down to tens of thousands of pairs
+    # or more, and per-row Cypher execute() is ~10,000x slower than COPY at that volume (measured:
+    # 71k edges, 607s with MERGE vs 0.05s with COPY)
+    new_tags = involved_tags - graph_db.GetExistingTags()
+    
+    with tempfile.TemporaryDirectory( prefix = 'hydrus_graph_cooccur_' ) as tmp_dir:
+        
+        if len( new_tags ) > 0:
+            
+            tags_csv_path = os.path.join( tmp_dir, 'tags.csv' )
+            
+            with open( tags_csv_path, 'w', newline = '', encoding = 'utf8' ) as f:
+                
+                writer = csv.writer( f )
+                writer.writerow( [ 'tag', 'namespace', 'subtag' ] )
+                
+                for tag in new_tags:
+                    
+                    ( namespace, subtag ) = HydrusTags.SplitTag( tag )
+                    
+                    writer.writerow( [ tag, namespace, subtag ] )
+            
+            
+            graph_db.BulkLoad( 'Tag', tags_csv_path )
+        
+        
+        edges_csv_path = os.path.join( tmp_dir, 'edges.csv' )
+        
+        with open( edges_csv_path, 'w', newline = '', encoding = 'utf8' ) as f:
+            
+            writer = csv.writer( f )
+            writer.writerow( [ 'tag_a', 'tag_b', 'service_key', 'count', 'weight' ] )
+            
+            for ( a, b, count, weight ) in pruned_pairs:
+                
+                writer.writerow( [ a, b, service_key.hex(), count, weight ] )
+        
+        
+        graph_db.BulkLoad( 'CO_OCCURS', edges_csv_path )
 
 
 
