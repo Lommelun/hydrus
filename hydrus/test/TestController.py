@@ -63,6 +63,8 @@ from hydrus.test import TestClientDBDuplicatesAutoResolution
 from hydrus.test import TestClientDBTags
 from hydrus.test import TestClientDuplicatesAutoResolution
 from hydrus.test import TestClientFileStorage
+from hydrus.test import TestClientGraphGrounding
+from hydrus.test import TestClientGraphSeed
 from hydrus.test import TestClientImageHandling
 from hydrus.test import TestClientImportObjects
 from hydrus.test import TestClientImportOptions
@@ -1001,6 +1003,14 @@ class Controller( object ):
         
         module_lookup[ 'client_db' ] = [
             TestClientDB
+        ]
+
+        module_lookup[ 'client_graph' ] = [
+            TestClientGraphGrounding
+        ]
+
+        module_lookup[ 'client_graph_seed' ] = [
+            TestClientGraphSeed
         ]
         
         module_lookup[ 'server_db' ] = [
