@@ -11,15 +11,7 @@ def GetRelatedTags( graph_db, tag, service_key, limit = 100 ):
     # already a known sibling of it -- those are existing relationships, not suggestions
     excluded = { tag, ideal }
     excluded.update( graph_db.GetAncestors( ideal, service_key ) )
-    
-    sibling_result = graph_db.Execute(
-        'MATCH (a:Tag {tag: $tag})-[:SIBLING_OF {service_key: $service_key}]->(b:Tag) RETURN a.tag',
-        { 'tag' : ideal, 'service_key' : service_key.hex() }
-    )
-    
-    while sibling_result.has_next():
-        
-        excluded.add( sibling_result.get_next()[ 0 ] )
+    excluded.update( graph_db.GetSiblings( ideal, service_key ) )
     
     
     candidates = graph_db.GetCoOccurring( ideal, service_key, limit = limit + len( excluded ) )

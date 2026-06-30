@@ -9,6 +9,7 @@ from hydrus.core import HydrusData
 from hydrus.client.graph import ClientGraphController
 from hydrus.client.graph import ClientGraphDB
 from hydrus.client.graph import ClientGraphMigrate
+from hydrus.client.graph import ClientGraphSuggestions
 from hydrus.client.graph import ClientGraphSync
 from hydrus.client.metadata import ClientContentUpdates
 from hydrus.client.metadata import ClientTags
@@ -160,6 +161,54 @@ class TestClientGraphSync( unittest.TestCase ):
             
             result = graph_db.Execute( 'MATCH (a:Tag {tag: $a})-[:SIBLING_OF {service_key: $sk}]->(b:Tag {tag: $b}) RETURN count(*)', { 'a' : 'kitty', 'b' : 'cat', 'sk' : service_key.hex() } )
             self.assertEqual( result.get_next()[ 0 ], 0 )
+            
+            graph_db.Close()
+        
+        finally:
+            
+            shutil.rmtree( graph_parent_dir, ignore_errors = True )
+
+
+
+class TestClientGraphSuggestions( unittest.TestCase ):
+    
+    def test_related_tags_excludes_known_siblings( self ):
+        
+        # regression: GetRelatedTags' sibling-exclusion query used to MATCH (a:Tag {tag:$ideal})
+        # -[:SIBLING_OF]->(b) RETURN a.tag -- which returns $ideal itself (already excluded by the
+        # {tag, ideal} seed), never an actual sibling, since an ideal has no outgoing SIBLING_OF
+        # edge. 'kitty' would have leaked through as a "related" suggestion despite being a known
+        # sibling of 'cat'. Fixed by routing through the shared, correctly-directed GetSiblings.
+        
+        graph_parent_dir = tempfile.mkdtemp( prefix = 'hydrus_graph_sibling_exclusion_' )
+        graph_dir = os.path.join( graph_parent_dir, 'graph' )
+        
+        try:
+            
+            graph_db = ClientGraphDB.GraphDB( graph_dir )
+            
+            service_key = HydrusData.GenerateKey()
+            
+            for tag in ( 'cat', 'kitty', 'outdoors' ):
+                
+                graph_db.MergeTag( tag )
+            
+            
+            graph_db.MergeEdge( 'SIBLING_OF', 'kitty', 'cat', service_key )
+            graph_db.MergeEdge( 'IDEAL_OF', 'kitty', 'cat', service_key )
+            
+            for ( other_tag, count, weight ) in ( ( 'kitty', 5, 3.0 ), ( 'outdoors', 4, 2.0 ) ):
+                
+                graph_db.Execute(
+                    'MATCH (a:Tag {tag: $a}), (b:Tag {tag: $b}) MERGE (a)-[:CO_OCCURS {service_key: $sk, count: $count, weight: $weight}]->(b)',
+                    { 'a' : 'cat', 'b' : other_tag, 'sk' : service_key.hex(), 'count' : count, 'weight' : weight }
+                )
+            
+            
+            related_tags = [ tag for ( tag, _count, _weight ) in ClientGraphSuggestions.GetRelatedTags( graph_db, 'cat', service_key ) ]
+            
+            self.assertNotIn( 'kitty', related_tags ) # already a known sibling, not a suggestion
+            self.assertIn( 'outdoors', related_tags )
             
             graph_db.Close()
         

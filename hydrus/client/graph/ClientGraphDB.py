@@ -172,6 +172,23 @@ class GraphDB( object ):
         return tag
     
     
+    def GetSiblings( self, ideal_tag: str, service_key: bytes ) -> list:
+        
+        result = self._connection.execute(
+            'MATCH (a:Tag)-[:SIBLING_OF {service_key: $service_key}]->(b:Tag {tag: $tag}) RETURN a.tag',
+            { 'tag' : ideal_tag, 'service_key' : service_key.hex() }
+        )
+        
+        siblings = []
+        
+        while result.has_next():
+            
+            siblings.append( result.get_next()[ 0 ] )
+        
+        
+        return siblings
+    
+    
     def GetAncestors( self, tag: str, service_key: bytes ) -> set:
         
         result = self._connection.execute(
