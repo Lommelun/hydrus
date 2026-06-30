@@ -1488,6 +1488,15 @@ class Controller( HydrusController.HydrusController ):
         
         self.tag_display_maintenance_manager.Start()
         
+        self.graph_controller = None
+        
+        if self.new_options.GetBoolean( 'enable_tag_graph' ):
+            
+            from hydrus.client.graph import ClientGraphController
+            
+            self.graph_controller = ClientGraphController.GraphController( self )
+        
+        
         from hydrus.client.duplicates import ClientPotentialDuplicatesManager
         
         self.potential_duplicates_manager = ClientPotentialDuplicatesManager.PotentialDuplicatesMaintenanceManager( self )
@@ -2337,6 +2346,11 @@ class Controller( HydrusController.HydrusController ):
             
             self.SaveDirtyObjectsImportant()
             self.SaveDirtyObjectsInfrequent()
+            
+            if self.graph_controller is not None:
+                
+                self.graph_controller.Shutdown()
+                
             
         
         HydrusController.HydrusController.ShutdownModel( self )

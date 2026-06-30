@@ -1,0 +1,125 @@
+from hydrus.core import HydrusTags
+
+# Phase 1 scope: the relationship layer only (Tag, TagService, SIBLING_OF, IDEAL_OF, PARENT_OF).
+# File/TAGGED/CO_OCCURS node and rel tables are added when something actually populates them
+# (mapping load + co-occurrence projection are Phase 2/4) -- no point creating empty tables now.
+
+SCHEMA_STATEMENTS = [
+    'CREATE NODE TABLE IF NOT EXISTS Tag(tag STRING, namespace STRING, subtag STRING, PRIMARY KEY(tag))',
+    'CREATE NODE TABLE IF NOT EXISTS TagService(service_key STRING, service_type INT64, name STRING, PRIMARY KEY(service_key))',
+    'CREATE REL TABLE IF NOT EXISTS SIBLING_OF(FROM Tag TO Tag, service_key STRING)',
+    'CREATE REL TABLE IF NOT EXISTS IDEAL_OF(FROM Tag TO Tag, service_key STRING)',
+    'CREATE REL TABLE IF NOT EXISTS PARENT_OF(FROM Tag TO Tag, service_key STRING)',
+]
+
+class GraphDB( object ):
+    
+    def __init__( self, db_dir: str ):
+        
+        import ladybug
+        
+        # ponytail: no os.makedirs here -- ladybug creates/opens its own directory at this path
+        # and errors if it already exists as a plain (non-ladybug) directory.
+        self._database = ladybug.Database( db_dir )
+        self._connection = ladybug.Connection( self._database )
+        
+        for statement in SCHEMA_STATEMENTS:
+            
+            self._connection.execute( statement )
+    
+    
+    
+    def IsEmpty( self ) -> bool:
+        
+        result = self._connection.execute( 'MATCH (t:Tag) RETURN count(t)' )
+        
+        return result.get_next()[ 0 ] == 0
+    
+    
+    def Execute( self, query: str, parameters = None ):
+        
+        return self._connection.execute( query, parameters )
+    
+    
+    def MergeTagService( self, service_key: bytes, service_type: int, name: str ):
+        
+        self._connection.execute(
+            'MERGE (s:TagService {service_key: $service_key}) ON CREATE SET s.service_type = $service_type, s.name = $name ON MATCH SET s.service_type = $service_type, s.name = $name',
+            { 'service_key' : service_key.hex(), 'service_type' : service_type, 'name' : name }
+        )
+    
+    
+    def MergeTag( self, tag: str ):
+        
+        ( namespace, subtag ) = HydrusTags.SplitTag( tag )
+        
+        self._connection.execute(
+            'MERGE (t:Tag {tag: $tag}) ON CREATE SET t.namespace = $namespace, t.subtag = $subtag',
+            { 'tag' : tag, 'namespace' : namespace, 'subtag' : subtag }
+        )
+    
+    
+    def MergeEdge( self, rel_type: str, tag_a: str, tag_b: str, service_key: bytes ):
+        
+        if rel_type not in ( 'SIBLING_OF', 'IDEAL_OF', 'PARENT_OF' ):
+            
+            raise ValueError( f'Unknown graph rel type: {rel_type}' )
+        
+        
+        self._connection.execute(
+            f'MATCH (a:Tag {{tag: $tag_a}}), (b:Tag {{tag: $tag_b}}) MERGE (a)-[:{rel_type} {{service_key: $service_key}}]->(b)',
+            { 'tag_a' : tag_a, 'tag_b' : tag_b, 'service_key' : service_key.hex() }
+        )
+    
+    
+    def DeleteEdge( self, rel_type: str, tag_a: str, tag_b: str, service_key: bytes ):
+        
+        if rel_type not in ( 'SIBLING_OF', 'IDEAL_OF', 'PARENT_OF' ):
+            
+            raise ValueError( f'Unknown graph rel type: {rel_type}' )
+        
+        
+        self._connection.execute(
+            f'MATCH (a:Tag {{tag: $tag_a}})-[r:{rel_type} {{service_key: $service_key}}]->(b:Tag {{tag: $tag_b}}) DELETE r',
+            { 'tag_a' : tag_a, 'tag_b' : tag_b, 'service_key' : service_key.hex() }
+        )
+    
+    
+    def GetIdeal( self, tag: str, service_key: bytes ) -> str:
+        
+        result = self._connection.execute(
+            'MATCH (a:Tag {tag: $tag})-[r:IDEAL_OF {service_key: $service_key}]->(b:Tag) RETURN b.tag',
+            { 'tag' : tag, 'service_key' : service_key.hex() }
+        )
+        
+        if result.has_next():
+            
+            return result.get_next()[ 0 ]
+        
+        
+        return tag
+    
+    
+    def GetAncestors( self, tag: str, service_key: bytes ) -> set:
+        
+        result = self._connection.execute(
+            'MATCH (a:Tag {tag: $tag})-[:PARENT_OF* {service_key: $service_key}]->(b:Tag) RETURN DISTINCT b.tag',
+            { 'tag' : tag, 'service_key' : service_key.hex() }
+        )
+        
+        ancestors = set()
+        
+        while result.has_next():
+            
+            ancestors.add( result.get_next()[ 0 ] )
+        
+        
+        return ancestors
+    
+    
+    def Close( self ):
+        
+        del self._connection
+        del self._database
+
+

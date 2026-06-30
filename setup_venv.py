@@ -398,6 +398,7 @@ def main():
             'chardet' : '<=7.4.3',
             'cryptography' : '<=48.0.0',
             'html5lib' : '<=1.1',
+            'ladybug' : '<=0.17.1',
             'lxml' : '<=6.1.1',
             'lz4' : '<=4.4.5',
             'olefile' : '<=0.47',
