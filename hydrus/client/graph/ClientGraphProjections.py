@@ -14,11 +14,10 @@ from hydrus.core import HydrusTags
 #
 # ponytail: reads SQLite directly for the per-file tag sets, the one deliberate exception to
 # "always go through hydrus_db.Read(...)". The plan calls this out explicitly ("CO_OCCURS can be
-# derived directly from SQLite") because there's no graph-side per-file data to aggregate from yet
-# (TAGGED edges are Phase 4), and no existing Read action does a one-shot bulk per-service mapping
-# dump -- the closest, 'migration_get_mappings', is paginated for the GUI's migration wizard, not
-# built for a batch job. Opens its own read-only connections (WAL mode supports concurrent
-# readers), so this is safe to run alongside the live DB thread.
+# derived directly from SQLite") because no existing Read action does a one-shot bulk per-service
+# mapping dump -- the closest, 'migration_get_mappings', is paginated for the GUI's migration
+# wizard, not built for a batch job. Opens its own read-only connections (WAL mode supports
+# concurrent readers), so this is safe to run alongside the live DB thread.
 #
 # Caller's responsibility: Hydrus batches commits (does not commit to disk after every write), so
 # recent edits may not be visible to these direct-SQLite reads yet. Call controller.db.ForceACommit()
@@ -86,28 +85,9 @@ def RebuildCoOccurrence( graph_db, db_dir, service_key, min_count = 2 ):
     # bulk CSV load, not per-edge MERGE: a real corpus prunes down to tens of thousands of pairs
     # or more, and per-row Cypher execute() is ~10,000x slower than COPY at that volume (measured:
     # 71k edges, 607s with MERGE vs 0.05s with COPY)
-    new_tags = involved_tags - graph_db.GetExistingTags()
-    
     with tempfile.TemporaryDirectory( prefix = 'hydrus_graph_cooccur_' ) as tmp_dir:
         
-        if len( new_tags ) > 0:
-            
-            tags_csv_path = os.path.join( tmp_dir, 'tags.csv' )
-            
-            with open( tags_csv_path, 'w', newline = '', encoding = 'utf8' ) as f:
-                
-                writer = csv.writer( f )
-                writer.writerow( [ 'tag', 'namespace', 'subtag' ] )
-                
-                for tag in new_tags:
-                    
-                    ( namespace, subtag ) = HydrusTags.SplitTag( tag )
-                    
-                    writer.writerow( [ tag, namespace, subtag ] )
-            
-            
-            graph_db.BulkLoad( 'Tag', tags_csv_path )
-        
+        _BulkLoadNewTags( graph_db, involved_tags, tmp_dir )
         
         edges_csv_path = os.path.join( tmp_dir, 'edges.csv' )
         
@@ -122,6 +102,124 @@ def RebuildCoOccurrence( graph_db, db_dir, service_key, min_count = 2 ):
         
         
         graph_db.BulkLoad( 'CO_OCCURS', edges_csv_path )
+
+
+
+# Phase 4a: load File (hash-identity) + TAGGED edges into the graph as a duplicate, read-only
+# mirror of SQLite's current mappings -- the same data SQLite already has, not a switch. SQLite
+# stays authoritative; this exists purely so graph-derived results can be cross-checked against it
+# (see TestClientGraphProjections.py) before anything is built that actually relies on it (Phase 4b).
+# Storage tags only (current_mappings, like RebuildCoOccurrence) -- not sibling/parent-collapsed
+# display tags, so cross-checks must compare against SQLite's own storage-level counts, not a
+# display-tag Read action.
+
+def RebuildFileTags( graph_db, db_dir, service_key ):
+    
+    tag_to_hash_ids = _LoadTagToHashIds( db_dir, service_key )
+    
+    graph_db.ClearFileTags( service_key )
+    
+    if len( tag_to_hash_ids ) == 0:
+        
+        return
+    
+    
+    all_hash_ids = set()
+    
+    for hash_ids in tag_to_hash_ids.values():
+        
+        all_hash_ids.update( hash_ids )
+    
+    
+    new_hash_ids = all_hash_ids - graph_db.GetExistingFileHashIds()
+    
+    # ponytail: assumes every hash_id in current_mappings has a row in master's hashes table.
+    # True for any DB that hasn't hit the rare orphan-hash_id recovery path in ClientDBMaster --
+    # not worth guarding against here until a real-DB run actually trips it.
+    hash_id_to_sha256 = _LoadHashes( db_dir, new_hash_ids )
+    
+    with tempfile.TemporaryDirectory( prefix = 'hydrus_graph_filetags_' ) as tmp_dir:
+        
+        _BulkLoadNewTags( graph_db, set( tag_to_hash_ids.keys() ), tmp_dir )
+        
+        if len( new_hash_ids ) > 0:
+            
+            files_csv_path = os.path.join( tmp_dir, 'files.csv' )
+            
+            with open( files_csv_path, 'w', newline = '', encoding = 'utf8' ) as f:
+                
+                writer = csv.writer( f )
+                writer.writerow( [ 'hash_id', 'sha256' ] )
+                
+                for hash_id in new_hash_ids:
+                    
+                    writer.writerow( [ hash_id, hash_id_to_sha256[ hash_id ].hex() ] )
+            
+            
+            graph_db.BulkLoad( 'File', files_csv_path )
+        
+        
+        tagged_csv_path = os.path.join( tmp_dir, 'tagged.csv' )
+        
+        with open( tagged_csv_path, 'w', newline = '', encoding = 'utf8' ) as f:
+            
+            writer = csv.writer( f )
+            writer.writerow( [ 'hash_id', 'tag', 'service_key' ] )
+            
+            for ( tag, hash_ids ) in tag_to_hash_ids.items():
+                
+                for hash_id in hash_ids:
+                    
+                    writer.writerow( [ hash_id, tag, service_key.hex() ] )
+        
+        
+        graph_db.BulkLoad( 'TAGGED', tagged_csv_path )
+
+
+
+def _BulkLoadNewTags( graph_db, tags, tmp_dir ):
+    
+    new_tags = set( tags ) - graph_db.GetExistingTags()
+    
+    if len( new_tags ) == 0:
+        
+        return
+    
+    
+    tags_csv_path = os.path.join( tmp_dir, 'tags.csv' )
+    
+    with open( tags_csv_path, 'w', newline = '', encoding = 'utf8' ) as f:
+        
+        writer = csv.writer( f )
+        writer.writerow( [ 'tag', 'namespace', 'subtag' ] )
+        
+        for tag in new_tags:
+            
+            ( namespace, subtag ) = HydrusTags.SplitTag( tag )
+            
+            writer.writerow( [ tag, namespace, subtag ] )
+    
+    
+    graph_db.BulkLoad( 'Tag', tags_csv_path )
+
+
+
+def _LoadHashes( db_dir, hash_ids ):
+    
+    if len( hash_ids ) == 0:
+        
+        return {}
+    
+    
+    master_db_path = os.path.join( db_dir, 'client.master.db' )
+    
+    master_conn = sqlite3.connect( f'file:{master_db_path}?mode=ro', uri = True )
+    
+    hash_id_to_sha256 = { hash_id : sha256 for ( hash_id, sha256 ) in master_conn.execute( 'SELECT hash_id, hash FROM hashes' ) if hash_id in hash_ids }
+    
+    master_conn.close()
+    
+    return hash_id_to_sha256
 
 
 

@@ -1,16 +1,19 @@
 from hydrus.core import HydrusTags
 
-# Phase 1 scope was the relationship layer only (Tag, TagService, SIBLING_OF, IDEAL_OF, PARENT_OF).
-# File/TAGGED are still deferred (mapping load is Phase 4's footprint lever). CO_OCCURS is Phase 2:
-# derived directly from SQLite mappings, not from graph TAGGED edges that don't exist yet.
+# Phase 1 was the relationship layer (Tag, TagService, SIBLING_OF, IDEAL_OF, PARENT_OF). Phase 2
+# added CO_OCCURS, derived directly from SQLite mappings. Phase 4a adds File + TAGGED: a duplicate,
+# read-only mirror of SQLite's current file->tag mappings, for cross-checking only -- nothing
+# downstream reads it yet (see ClientGraphProjections.RebuildFileTags).
 
 SCHEMA_STATEMENTS = [
     'CREATE NODE TABLE IF NOT EXISTS Tag(tag STRING, namespace STRING, subtag STRING, PRIMARY KEY(tag))',
     'CREATE NODE TABLE IF NOT EXISTS TagService(service_key STRING, service_type INT64, name STRING, PRIMARY KEY(service_key))',
+    'CREATE NODE TABLE IF NOT EXISTS File(hash_id INT64, sha256 STRING, PRIMARY KEY(hash_id))',
     'CREATE REL TABLE IF NOT EXISTS SIBLING_OF(FROM Tag TO Tag, service_key STRING)',
     'CREATE REL TABLE IF NOT EXISTS IDEAL_OF(FROM Tag TO Tag, service_key STRING)',
     'CREATE REL TABLE IF NOT EXISTS PARENT_OF(FROM Tag TO Tag, service_key STRING)',
     'CREATE REL TABLE IF NOT EXISTS CO_OCCURS(FROM Tag TO Tag, service_key STRING, count INT64, weight DOUBLE)',
+    'CREATE REL TABLE IF NOT EXISTS TAGGED(FROM File TO Tag, service_key STRING)',
 ]
 
 class GraphDB( object ):
@@ -98,6 +101,28 @@ class GraphDB( object ):
         
         
         return tags
+    
+    
+    def GetExistingFileHashIds( self ) -> set:
+        
+        result = self._connection.execute( 'MATCH (f:File) RETURN f.hash_id' )
+        
+        hash_ids = set()
+        
+        while result.has_next():
+            
+            hash_ids.add( result.get_next()[ 0 ] )
+        
+        
+        return hash_ids
+    
+    
+    def ClearFileTags( self, service_key: bytes ):
+        
+        self._connection.execute(
+            'MATCH (:File)-[r:TAGGED {service_key: $service_key}]->(:Tag) DELETE r',
+            { 'service_key' : service_key.hex() }
+        )
     
     
     def BulkLoad( self, table_name: str, csv_path: str ):

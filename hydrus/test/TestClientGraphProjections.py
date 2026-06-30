@@ -52,6 +52,55 @@ class TestClientGraphProjections( ClientGraphTestFixtures.GraphFixtureMixin, uni
         finally:
             
             shutil.rmtree( graph_parent_dir, ignore_errors = True )
+    
+    
+    def test_file_tags_mirror_sqlite_mappings( self ):
+        
+        self._BuildFixture()
+        
+        type( self )._db.ForceACommit()
+        
+        graph_parent_dir = tempfile.mkdtemp( prefix = 'hydrus_graph_filetags_' )
+        graph_dir = os.path.join( graph_parent_dir, 'graph' )
+        
+        try:
+            
+            graph_db = ClientGraphDB.GraphDB( graph_dir )
+            
+            ClientGraphProjections.RebuildFileTags( graph_db, TestController.DB_DIR, self.personal_key )
+            
+            # known fixture counts (see ClientGraphTestFixtures): cat=6, outdoors=5, play=4, dog=4, indoors=2
+            for ( tag, expected_count ) in ( ( 'cat', 6 ), ( 'outdoors', 5 ), ( 'play', 4 ), ( 'dog', 4 ), ( 'indoors', 2 ) ):
+                
+                result = graph_db.Execute(
+                    'MATCH (f:File)-[:TAGGED {service_key: $service_key}]->(t:Tag {tag: $tag}) RETURN count(f)',
+                    { 'tag' : tag, 'service_key' : self.personal_key.hex() }
+                )
+                
+                self.assertEqual( result.get_next()[ 0 ], expected_count )
+            
+            
+            # round trip on a single file: f1 carries cat, outdoors, play on the personal service
+            # (see fixture's tag_to_files) -- the graph's view of f1's tags should match exactly
+            result = graph_db.Execute(
+                'MATCH (f:File {sha256: $sha256})-[:TAGGED {service_key: $service_key}]->(t:Tag) RETURN t.tag',
+                { 'sha256' : self.hashes[ 0 ].hex(), 'service_key' : self.personal_key.hex() }
+            )
+            
+            graph_tags = set()
+            
+            while result.has_next():
+                
+                graph_tags.add( result.get_next()[ 0 ] )
+            
+            
+            self.assertEqual( graph_tags, { 'cat', 'outdoors', 'play' } )
+            
+            graph_db.Close()
+        
+        finally:
+            
+            shutil.rmtree( graph_parent_dir, ignore_errors = True )
 
 
 
