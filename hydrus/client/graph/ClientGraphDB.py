@@ -1,8 +1,8 @@
 from hydrus.core import HydrusTags
 
-# Phase 1 scope: the relationship layer only (Tag, TagService, SIBLING_OF, IDEAL_OF, PARENT_OF).
-# File/TAGGED/CO_OCCURS node and rel tables are added when something actually populates them
-# (mapping load + co-occurrence projection are Phase 2/4) -- no point creating empty tables now.
+# Phase 1 scope was the relationship layer only (Tag, TagService, SIBLING_OF, IDEAL_OF, PARENT_OF).
+# File/TAGGED are still deferred (mapping load is Phase 4's footprint lever). CO_OCCURS is Phase 2:
+# derived directly from SQLite mappings, not from graph TAGGED edges that don't exist yet.
 
 SCHEMA_STATEMENTS = [
     'CREATE NODE TABLE IF NOT EXISTS Tag(tag STRING, namespace STRING, subtag STRING, PRIMARY KEY(tag))',
@@ -10,6 +10,7 @@ SCHEMA_STATEMENTS = [
     'CREATE REL TABLE IF NOT EXISTS SIBLING_OF(FROM Tag TO Tag, service_key STRING)',
     'CREATE REL TABLE IF NOT EXISTS IDEAL_OF(FROM Tag TO Tag, service_key STRING)',
     'CREATE REL TABLE IF NOT EXISTS PARENT_OF(FROM Tag TO Tag, service_key STRING)',
+    'CREATE REL TABLE IF NOT EXISTS CO_OCCURS(FROM Tag TO Tag, service_key STRING, count INT64, weight DOUBLE)',
 ]
 
 class GraphDB( object ):
@@ -83,6 +84,46 @@ class GraphDB( object ):
             f'MATCH (a:Tag {{tag: $tag_a}})-[r:{rel_type} {{service_key: $service_key}}]->(b:Tag {{tag: $tag_b}}) DELETE r',
             { 'tag_a' : tag_a, 'tag_b' : tag_b, 'service_key' : service_key.hex() }
         )
+    
+    
+    def ClearCoOccurs( self, service_key: bytes ):
+        
+        self._connection.execute(
+            'MATCH (:Tag)-[r:CO_OCCURS {service_key: $service_key}]->(:Tag) DELETE r',
+            { 'service_key' : service_key.hex() }
+        )
+    
+    
+    def MergeCoOccurs( self, tag_a: str, tag_b: str, service_key: bytes, count: int, weight: float ):
+        
+        # stored once per unordered pair under a canonical ordering; queried with an undirected
+        # pattern (see GetCoOccurring) so it doesn't matter which side a caller asks from
+        if tag_b < tag_a:
+            
+            ( tag_a, tag_b ) = ( tag_b, tag_a )
+        
+        
+        self._connection.execute(
+            'MATCH (a:Tag {tag: $tag_a}), (b:Tag {tag: $tag_b}) MERGE (a)-[r:CO_OCCURS {service_key: $service_key}]->(b) SET r.count = $count, r.weight = $weight',
+            { 'tag_a' : tag_a, 'tag_b' : tag_b, 'service_key' : service_key.hex(), 'count' : count, 'weight' : weight }
+        )
+    
+    
+    def GetCoOccurring( self, tag: str, service_key: bytes, limit: int = 100 ) -> list:
+        
+        result = self._connection.execute(
+            'MATCH (a:Tag {tag: $tag})-[r:CO_OCCURS {service_key: $service_key}]-(b:Tag) RETURN b.tag, r.count, r.weight ORDER BY r.weight DESC LIMIT $limit',
+            { 'tag' : tag, 'service_key' : service_key.hex(), 'limit' : limit }
+        )
+        
+        rows = []
+        
+        while result.has_next():
+            
+            rows.append( result.get_next() )
+        
+        
+        return rows
     
     
     def GetIdeal( self, tag: str, service_key: bytes ) -> str:
