@@ -96,6 +96,21 @@ class TestClientGraphProjections( ClientGraphTestFixtures.GraphFixtureMixin, uni
             
             self.assertEqual( graph_tags, { 'cat', 'outdoors', 'play' } )
             
+            # re-running on an already-populated graph must not crash on a duplicate-PK COPY and
+            # must produce the same counts -- ClearFileTags + the new_hash_ids/new_tags diffs exist
+            # specifically for this path, so it needs its own coverage, not just the fresh-graph case
+            ClientGraphProjections.RebuildFileTags( graph_db, TestController.DB_DIR, self.personal_key )
+            
+            for ( tag, expected_count ) in ( ( 'cat', 6 ), ( 'outdoors', 5 ), ( 'play', 4 ), ( 'dog', 4 ), ( 'indoors', 2 ) ):
+                
+                result = graph_db.Execute(
+                    'MATCH (f:File)-[:TAGGED {service_key: $service_key}]->(t:Tag {tag: $tag}) RETURN count(f)',
+                    { 'tag' : tag, 'service_key' : self.personal_key.hex() }
+                )
+                
+                self.assertEqual( result.get_next()[ 0 ], expected_count )
+            
+            
             graph_db.Close()
         
         finally:
