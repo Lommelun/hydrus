@@ -33,6 +33,10 @@ run *args:
 server *args:
     {{python}} hydrus_server.py {{args}}
 
+# TEMP, for developing the tag-graph feature: boot with real sample data, auto-cleaned on quit.
+run-with-sample *args:
+    {{python}} dev_run_with_sample.py {{args}}
+
 # --- tests ------------------------------------------------------------------
 
 # Run the full test suite (boots a real QApplication).
