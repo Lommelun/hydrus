@@ -57,26 +57,83 @@ instance; in production it's the real `ClientController`. They expose different 
 neither reliably has the same `.db_dir`-equivalent). Functions needing filesystem access take an
 explicit `db_dir: str` parameter rather than deriving it from `hydrus_db`.
 
-## Extension: SQLite attach (`docs.ladybugdb.com/extensions/attach/sqlite/`)
+## Extension: SQLite attach (`docs.ladybugdb.com/extensions/attach/sqlite/`) — hands-on tested 2026-07-01
 
-Confirmed real, read-oriented:
+Basic mechanics confirmed against a synthetic 2-file SQLite database mirroring Hydrus's real
+`client.mappings.db`/`client.master.db` split (a scratch spike, not committed code):
 
 ```
-ATTACH 'university.db' AS uw (dbtype sqlite);
-LOAD FROM uw.person RETURN *;          -- scan the attached table
-COPY Person FROM uw.person;            -- import into a native Ladybug table, no CSV needed
+LOAD sqlite;                                    -- must run once per Connection session, not persisted
+                                                 -- at the database level (confirmed: a fresh Connection
+                                                 -- to the same on-disk graph needs this again)
+ATTACH 'mappings.db' AS m (dbtype sqlite);
+ATTACH 'master.db' AS mst (dbtype sqlite);       -- multiple simultaneous attaches work fine
 ```
 
-- Ladybug caches the attached table's schema (names/types) to avoid re-fetching it every query.
-- **No write-back to SQLite** — read-only from Ladybug's side.
-- **No confirmed single-query join between an attached SQLite table and native Ladybug graph
-  structures** in the docs reviewed — examples show separate operations (scan via `LOAD FROM`, then
-  separately `MATCH` against the graph), not a combined query. So this simplifies *how* a rebuild
-  reads SQLite data (no Python `sqlite3` connection, no intermediate CSV file for the `COPY` step) —
-  it does not provide a live view that auto-updates as SQLite changes, and it doesn't let a single
-  Cypher query traverse both stores at once. See `tag-graph-real-data-validation.md` (evaluate
-  replacing the current CSV approach with this) and `tag-graph-authoritative-driver.md` (why this
-  alone doesn't solve live sync).
+**What works, confirmed by direct testing, not just docs:**
+- **Cross-attached-source JOINs work**, via chained `LOAD FROM` + `WITH`-renaming to dodge column-name
+  collisions (a bare `WHERE tag_id = tag_id` self-collides if both tables have a `tag_id` column):
+  ```
+  LOAD FROM m.current_mappings_7
+  WITH tag_id AS m_tag_id, hash_id AS m_hash_id
+  LOAD FROM mst.tags
+  WHERE tag_id = m_tag_id
+  RETURN m_hash_id, subtag_id
+  ```
+  Verified this returns the correct joined rows against known synthetic data. This means the earlier
+  hedge ("no confirmed single-query join") was too pessimistic for attached-source-to-attached-source
+  joins specifically — it works, just not with plain SQL subquery syntax (`LOAD FROM (SELECT ...)`
+  fails to parse; must use this chained Cypher-native form).
+- **`COPY NativeTable FROM (LOAD FROM ... RETURN ...)` works** — loads straight into a native Ladybug
+  table from a `LOAD FROM` subquery, **no intermediate CSV file at all**. Confirmed.
+- **BLOB columns pass through natively** (`RETURN hash AS sha256` where `hash` is a SQLite BLOB column,
+  into a native `BLOB`-typed property) — this sidesteps needing any hex-encoding function entirely,
+  since `hex()`/`to_hex()`/`bin_to_hex()`/`encode()` are **not available functions** in this Ladybug
+  build (`CAST(blob AS STRING)` exists but produces a Python-repr-style escaped string, not usable as a
+  clean hex string, e.g. `\xAA\xAA...` not `aaaa...`).
+
+**What does NOT work, confirmed by direct testing (a real, silent-failure footgun):**
+- **Anti-join filtering (`OPTIONAL MATCH ... WHERE existing IS NULL` against an already-populated
+  native table, combined with a `LOAD FROM` attached source) does not reliably filter** — it silently
+  returned all rows, including ones that should have been excluded, rather than erroring. This was
+  only caught because the follow-up `COPY` then failed on a duplicate primary key it should never have
+  seen. **This is a real correctness trap**, not just a missing feature — if you rely on this pattern
+  to implement "only load new rows," it will silently corrupt or fail your data load rather than
+  cleanly filtering. Do not use this pattern without re-verifying it first.
+- Practical consequence: since `COPY` still fails the whole batch on any duplicate primary key (see
+  above), and there's no working way to filter attached-source rows against already-graphed rows in
+  pure Cypher, **the "only load rows that aren't already in the graph" logic that makes rebuilds
+  idempotent still has to happen in Python** (fetch existing IDs, fetch source IDs, set-difference,
+  then load only the new subset) — attach doesn't eliminate this step.
+
+**Performance: `UNWIND $list AS x CREATE (...)` (parameterized bulk insert, no CSV, no attach) was
+also benchmarked as a third option**, since it could sidestep the anti-join gap entirely (filter in
+Python, pass the filtered list as a query parameter, skip both the CSV file and the attach machinery).
+Head-to-head at the same scale as the original CO_OCCURS benchmark (71,356 edges):
+- **CSV + `COPY`** (current production approach): **0.082s** total (tags + edges).
+- **`UNWIND` + `CREATE`** for the same edges: **1.975s** — ~24x slower than CSV+`COPY` for
+  relationships specifically, because each edge needs a per-row `MATCH` to find its two endpoint nodes
+  by primary key before creating it, which `COPY`'s bulk-loader path skips entirely. (For *node*
+  creation alone, `UNWIND`+`CREATE` was fast — 0.009s for 3,000 nodes — comparable to `COPY`; the gap
+  is specifically in relationship loading, which is the expensive, dominant part of this project's
+  actual workloads.)
+- **Verdict: CSV + `COPY` remains clearly the fastest option for bulk relationship loading.** Neither
+  attach-based loading nor `UNWIND`+`CREATE` beats it; both were real candidates worth testing, both
+  lost decisively once actually measured.
+
+**Overall verdict (2026-07-01): evaluated for real, not adopted.** Attach-based loading could
+genuinely simplify the *read* side of `ClientGraphProjections.py`'s `_LoadTagToHashIds` (replacing
+three separate Python `sqlite3.connect()` calls + manual dict-based tag_id→string joining with one
+chained `LOAD FROM` query) — that part is a real, working capability now. But: (a) it doesn't improve
+performance anywhere it matters (the bulk relationship load, which is the actual cost, stays on CSV+
+`COPY` either way, unchanged); (b) it adds a new runtime extension dependency (`LOAD sqlite;`,
+currently unused by any shipped code) for zero performance gain; (c) it trades legible,
+boring, well-understood Python (`sqlite3` + a dict comprehension) for less-familiar Cypher syntax with
+at least one confirmed silent-failure footgun nearby (the anti-join case) in the same feature area.
+**Recommendation: don't adopt this for the already-shipped, already-tested `ClientGraphProjections.py`
+code.** The finding is worth keeping (settles the open question with hard data instead of speculation,
+and the JOIN/BLOB/COPY-without-CSV capabilities are useful facts if this ever comes up again in a
+different context), but it doesn't clear the bar of being a clear win over what's already working.
 
 ## Extension: vector (`docs.ladybugdb.com/extensions/vector/`)
 

@@ -5,13 +5,20 @@
 Everything else in this project (dedup, the query-resolution work, deciding whether the graph is worth
 relying on for anything real) is more useful, or only possible, with real multi-source
 (`source → PTR → personal`) tag data instead of the safebooru-scale dev sample this project has used
-so far. This task is: get real data in front of the graph, confirm the existing backend holds up at
-real scale, and — as part of that — evaluate whether the current CSV-export + bulk-`COPY` loading
-approach should be replaced by Ladybug's SQLite `ATTACH` extension.
+so far. This task is: get real data in front of the graph and confirm the existing backend holds up at
+real scale.
 
-This is a **verification and evaluation task, not a one-off setup step** — treat "does it actually
-work at real scale" and "is there a better loading mechanism" as open questions to actually answer,
-not a checklist to rubber-stamp.
+This is a **verification task, not a one-off setup step** — treat "does it actually work at real
+scale" as an open question to actually answer, not a checklist to rubber-stamp.
+
+**The loading-mechanism question is already answered, don't redo it:** whether to replace the current
+CSV-export + bulk-`COPY` approach with Ladybug's SQLite `ATTACH` extension was investigated hands-on
+(2026-07-01, see `tag-graph-ladybug-engine-reference.md`'s attach section for the full, tested
+findings) and the answer is **no, keep the current approach** — attach-based loading and
+`UNWIND`+`CREATE` were both benchmarked directly against production-scale synthetic data and both lost
+decisively to CSV+`COPY` for relationship loading (the expensive, dominant part of the work); attach
+also has a confirmed silent-failure footgun in its anti-join filtering. This was a real spike with real
+numbers, not speculation — no need to re-evaluate unless something about Ladybug itself changes.
 
 ## What's already built (don't redo)
 
@@ -36,32 +43,12 @@ not a checklist to rubber-stamp.
    wrong ideals, crashes).
 3. Run `RebuildCoOccurrence` and `RebuildFileTags` against the real data; sanity-check output against
    spot-checks in the visual explorer.
-4. **Evaluate the SQLite `ATTACH` extension as a replacement for the current CSV-export step.** See
-   `tag-graph-ladybug-engine-reference.md` for exact syntax
-   (`ATTACH 'db' AS x (dbtype sqlite)`, then `LOAD FROM x.table` or `COPY NativeTable FROM x.table`).
-   Concretely try rewriting one of the existing rebuilders (`RebuildFileTags` is the simpler one — it's
-   a near-direct mirror of `current_mappings_{service_id}`) to load via `ATTACH`+`COPY` instead of
-   Python `sqlite3` + a temp CSV file, and compare:
-   - Code simplicity (does it actually remove the CSV-writing dance, or just relocate it?).
-   - Performance at real scale, against the already-measured baseline (~230x speedup of bulk `COPY`
-     over per-row `MERGE`, from the dev-scale corpus — does `ATTACH`-based loading beat, match, or lose
-     to the current CSV approach at real scale?).
-   - Whether the co-occurrence computation (currently Python `itertools.combinations` + lift-weighting
-     over data pulled into memory) could be pushed into SQL via the attached table instead, or whether
-     that's not worth the complexity.
-   - **This is read-only from SQLite's side and additive to the graph** — safe to try directly, no
-     special caution needed beyond the standing "work against the copy" rule.
 
 ## Findings to carry into this work
 
 See `tag-graph-hydrus-schema-reference.md` and `tag-graph-ladybug-engine-reference.md` for full detail.
-Headline points:
-- The `ATTACH` extension is real, but it's a *scan/import* operation you trigger, not a live view —
-  it doesn't make the graph automatically stay current as SQLite changes underneath it. It may
-  simplify/speed up **how** a rebuild reads data; it does not solve the separate live-sync question
-  (that's `tag-graph-authoritative-driver.md`'s territory).
-- Its docs don't show a single query joining an attached SQLite table with native graph structures —
-  don't assume you can write one Cypher query that reads live SQLite *and* traverses the graph at once.
+On the loading mechanism (settled, see above): CSV+`COPY` is confirmed fastest for bulk relationship
+loading, by a wide margin, against both alternatives actually tested. No open question left here.
 
 ## Once real data is in
 
