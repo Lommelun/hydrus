@@ -26,12 +26,30 @@ defensive, not a known-hit case, but cheap enough to always set.
 is `hash_id INT64`, `Tag`'s PK is `tag STRING`. A CSV with columns `hash_id, tag, service_key` bound
 positionally on the first try.
 
-## Concurrency & connections
+## Concurrency & connections (`docs.ladybugdb.com/concurrency/`) — re-verified rigorously 2026-07-01
 
-**`ladybug.Database(path, read_only=True)` works concurrently alongside a live writer connection** —
-confirmed reading a graph file with a real live write-holding connection open elsewhere, via a
-separate read-only connection, no error, real data back. A second *writable* connection to the same
-path does fail with a clear lock error naming the holding PID.
+The docs' own wording is broader/scarier than the actual enforced behavior — re-tested with a true
+two-*process* setup (not just two connections in one script) specifically to resolve the discrepancy:
+one OS process holding a `READ_WRITE` connection and **actively writing in a loop** (not just idle),
+while a second, separate OS process attempted concurrent access.
+
+- **`ladybug.Database(path, read_only=True)` from a separate process works concurrently alongside an
+  actively-writing separate process** — confirmed: real data returned, correct row count, no error,
+  while the writer process was verifiably still running and actively executing writes throughout.
+- **A second `READ_WRITE` connection from a separate process correctly fails**, with exactly the error
+  the docs describe: `RuntimeError: IO exception: Could not set lock on file ... Lock is held by PID
+  <n>`. This is the real, enforced single-writer boundary — read-vs-write, not "any second connection."
+- **One nuance worth knowing:** in an earlier, less rigorous version of this same test — writer process
+  opens a `Connection` but never calls `.execute()` before a second `READ_WRITE` connection attempts to
+  open — the second connection succeeded without error. This suggests the write lock may be acquired
+  lazily (tied to the first actual write, not to `Connection()` construction) rather than always held
+  from the moment a `READ_WRITE` `Database`/`Connection` object exists. Not fully characterized; the
+  practical takeaway (a genuinely active writer correctly blocks a second writer, and never blocks a
+  reader) is what matters for this project and is now confirmed solidly.
+- **Bottom line for this project:** the existing pattern (a live `ClientGraphController` holding the
+  one `READ_WRITE` connection; occasional external read-only inspection via a separate connection, e.g.
+  for dev verification) is safe and correctly supported. Never open a second `READ_WRITE` connection to
+  the same graph path while the app is running — that's the one real boundary.
 
 ## Cypher quirks
 
@@ -135,6 +153,52 @@ code.** The finding is worth keeping (settles the open question with hard data i
 and the JOIN/BLOB/COPY-without-CSV capabilities are useful facts if this ever comes up again in a
 different context), but it doesn't clear the bar of being a clear win over what's already working.
 
+## Bulk import formats & Parquet — hands-on tested 2026-07-01
+
+`docs.ladybugdb.com/import/` confirms `COPY FROM` (not `CREATE`/`MERGE`) is the intended bulk-load
+mechanism for "larger graphs of millions of nodes and beyond" — matches what this project already
+does. Supported formats: CSV, **Parquet**, NumPy, JSON, Pandas/Polars/PyArrow DataFrames, subqueries.
+Also notes an automatic spill-to-disk mechanism for 100M+ scale relationship tables (memory
+management, not something this project's current scale needs to think about, but relevant context for
+`tag-graph-authoritative-driver.md`'s PTR-scale question).
+
+**Parquet export/import syntax** (`docs.ladybugdb.com/export/parquet/`):
+```
+COPY (MATCH (u:User) RETURN u.*) TO 'user.parquet' (compression = 'snappy');   -- export
+LOAD FROM 'user.parquet' RETURN *;                                            -- import/scan
+COPY SomeTable FROM 'user.parquet';                                           -- import into native table
+```
+
+**Real end-to-end benchmark** (Python writes the file, then Ladybug `COPY`s it in — the actual
+production shape, not just Ladybug-to-Ladybug): tested via an isolated scratch venv with `pyarrow`
+(not installed in this project's real venv), comparing the full pipeline
+(`csv.writer`+`COPY FROM csv` vs. `pyarrow.parquet.write_table`+`COPY FROM parquet`) at two scales:
+
+| Edges | CSV pipeline | Parquet pipeline | Winner |
+|---|---|---|---|
+| 71,356 (matches the original CO_OCCURS benchmark scale) | 0.055s | 0.066s | CSV, narrowly |
+| 1,500,000 (~20x larger, closer to a real-DB order of magnitude) | 1.062s | 0.819s | **Parquet, 1.30x faster** |
+
+**Interpretation:** Parquet has real fixed overhead (columnar/binary structure, compression setup)
+that doesn't pay off at small scale — CSV wins narrowly at today's dev-scale corpus size. But the
+advantage grows with data size (crosses over somewhere between 71k and 1.5M edges) and file size drops
+sharply (Parquet was ~5x smaller than CSV for the same data at the 1.5M-edge test). **Not adopted now**
+— zero benefit at the project's current actual scale, and it would add `pyarrow` (a substantial
+dependency) for a win that doesn't materialize yet. **Worth trying for real** once
+`tag-graph-real-data-validation.md`'s real-scale data is in and *if* CSV import time actually shows up
+as a bottleneck at that point — this is exactly the kind of thing to revisit with real numbers, not
+speculation, at that time.
+
+## Migration between Ladybug versions (`docs.ladybugdb.com/migrate/`)
+
+**Not about migrating from SQLite or another database** — despite the URL, this page covers migrating
+data between different *versions of Ladybug itself* (schema evolution across upgrades), via
+`EXPORT DATABASE` (dumps schema + data, with a `schema_only = true` option) and `IMPORT DATABASE` on
+the new version. Relevant context for this project's own noted risk ("Ladybug (young fork) holds the
+only copy post-flip" in the durability considerations) — there's a documented, supported path for
+carrying data forward across Ladybug upgrades, which somewhat de-risks that concern, though it hasn't
+been tested hands-on since this project hasn't needed a version migration yet.
+
 ## Extension: vector (`docs.ladybugdb.com/extensions/vector/`)
 
 HNSW index (two hierarchical layers — a full lower layer, a sampled upper layer):
@@ -193,6 +257,7 @@ D3-in-browser explorer (`hydrus/client/graph/ClientGraphVisualize.py`):
 
 ## Related docs
 
-- `tag-graph-real-data-validation.md` — where the `ATTACH` extension gets actually tried.
+- `tag-graph-real-data-validation.md` — where `ATTACH` was tried (verdict: no) and where Parquet is
+  worth trying for real, at real scale, if CSV import time turns out to matter there.
 - `tag-graph-suggestions-and-dedup.md` — where `algo`/`vector` get actually tried.
 - `tag-graph-authoritative-driver.md` — why `ATTACH` doesn't solve live sync by itself.
