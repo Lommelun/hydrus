@@ -189,6 +189,40 @@ dependency) for a win that doesn't materialize yet. **Worth trying for real** on
 as a bottleneck at that point — this is exactly the kind of thing to revisit with real numbers, not
 speculation, at that time.
 
+## "Scan" vs "ingest" — the general model (`docs.ladybugdb.com/get-started/scan/`)
+
+Confirms the mental model behind everything above, and adds one more mechanism worth knowing about
+(tested hands-on, verdict: not useful for this project). Ladybug distinguishes two ways to touch
+external data:
+
+- **Ingest (`COPY FROM`)** — permanently stores data in native Ladybug tables. What this project
+  already does, confirmed as the right choice: the docs independently say **"CSV is slower but
+  commonly used, Parquet is recommended for performance"** — matches this project's own measured
+  Parquet finding above without prompting.
+- **Scan (`LOAD FROM`)** — reads external data into memory temporarily, without importing. Confirmed
+  supported source formats: CSV, Parquet, JSON, NumPy arrays, Pandas/Polars DataFrames, PyArrow
+  Tables (SQLite via the `attach` extension, tested separately above). Docs note only a `WHERE` clause
+  is supported for filtering *within* a single `LOAD FROM`'s own scan — this doesn't contradict the
+  already-tested chained-`LOAD FROM`-with-`WITH`-rename join pattern above, since that chaining/renaming
+  happens in the surrounding Cypher pipeline, not inside one scan's filter clause.
+- **A third, more powerful mechanism exists but doesn't apply here — tested, ruled out.** The docs
+  also describe `CREATE NODE TABLE ... WITH (storage='...')`, letting full Cypher (not just scan+filter)
+  query certain external sources *in place*, with zero import, indefinitely — a genuinely different
+  capability than scan-once-then-discard `LOAD FROM`. Tried it directly against a plain Parquet file:
+  **fails** — `Runtime exception: Unsupported storage option for node table`. Investigated why: the
+  supported external sources for this specific mechanism are Arrow-in-memory, DuckDB tables, and
+  **Apache Iceberg** tables specifically (not bare Parquet — Iceberg is a distinct table format that
+  wraps Parquet files with manifest/metadata files, normally written via dedicated tooling like
+  `pyiceberg`), plus Postgres/SQLite listed as "coming soon" (not available at all yet). Loading
+  Ladybug's `iceberg` extension succeeded, but producing a real Iceberg table (not just a raw
+  `.parquet` file) needs infrastructure this project has no other use for. **Not worth pursuing**:
+  this project's actual need (bulk-load computed data once per rebuild, then query natively-stored
+  data fast) is already fully served by `COPY FROM`; the in-place-query mechanism would only matter if
+  avoiding the import step entirely were valuable, which it isn't here — importing is fast (this is
+  the entire point of the CSV/Parquet benchmarks above) and native storage is presumably better-suited
+  to repeated graph traversal than an external-format-backed table anyway (untested, but not worth
+  testing given the setup cost already ruled this out on its own terms).
+
 ## Migration between Ladybug versions (`docs.ladybugdb.com/migrate/`)
 
 **Not about migrating from SQLite or another database** — despite the URL, this page covers migrating
